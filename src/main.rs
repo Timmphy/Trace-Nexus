@@ -1,11 +1,13 @@
+
+use clap::Parser;
+use cli::Cli;
 mod cli;
 mod admin;
 mod profiles;
 mod tools;
 mod manifest;
+mod refiner;
 
-use clap::Parser;
-use cli::Cli;
 
 fn main() {
     let args = Cli::parse();
@@ -39,6 +41,7 @@ fn main() {
 
     println!("\n[*] Generating collection manifest...");
     manifest::write_manifest(profile_name, output_str);
-
+    
+    refiner::run_refinement(output_str);
     println!("[+] Collection finished. Data is in: {}", output_str);
 }
