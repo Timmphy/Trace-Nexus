@@ -1,10 +1,11 @@
 use std::fs::{self, File};
 use std::path::{Path};
 use walkdir::WalkDir;
-use serde_json::{Value, Map, json};
+use serde_json::{Value, Map};
 use chrono::NaiveDateTime;
 use chrono::Datelike;
 use csv::ReaderBuilder;
+use crate::ui;
 
 const CATEGORIES: &[(&str, &str)] = &[
     // --- EXECUTION ---
@@ -50,7 +51,7 @@ const CATEGORIES: &[(&str, &str)] = &[
 
 // Main function to run the refinement process
 pub fn run_refinement(output_dir: &str) {
-    println!("[*] Refining data and cleaning up workspace...");
+    ui::info("Refining data and cleaning up workspace...");
     
     let base_path = Path::new(output_dir);
     let refined_path = base_path.join("refined");
@@ -65,22 +66,22 @@ pub fn run_refinement(output_dir: &str) {
         if path.is_file() {
             let file_name = path.file_name().unwrap_or_default().to_string_lossy();
             
-            // Security checks to skip certain paths
-            if path.starts_with(&refined_path) || path.starts_with(&raw_path) || path.to_string_lossy().contains("logs") {
+            // Important: Skip files already in refined or raw directories
+            if path.starts_with(&refined_path) || path.starts_with(&raw_path) {
                 continue;
             }
-            // Ingore own manifest.json files in the base directory
-            if file_name == "manifest.json" && path.parent() == Some(base_path) {
+            
+            // Ignoriere System-JSONs
+            if file_name == "manifest.json" || file_name == "case_summary.json" || file_name == "master_timeline.json" {
                 continue;
             }
+
             files_to_process.push(path);
         }
     }
 
     for path in files_to_process {
         let file_name = path.file_name().unwrap().to_string_lossy().to_string();
-
-        // Sort the file into a category based on its name
         let category = CATEGORIES.iter()
             .find(|(key, _)| file_name.to_lowercase().contains(&key.to_lowercase()))
             .map(|(_, cat)| *cat)
@@ -95,11 +96,8 @@ pub fn run_refinement(output_dir: &str) {
         let _ = fs::rename(&path, destination_raw);
     }
 
-    // Create agent briefing and master timeline
-    generate_agent_briefing(&refined_path);
+    // Create timeline after all files are processed
     create_master_timeline(&refined_path);
-
-    // Cleanup empty directories in the base path
     cleanup_empty_dirs(base_path);
 }
 
@@ -107,7 +105,7 @@ fn cleanup_empty_dirs(path: &Path) {
     // Function to remove empty directories recursively
     for entry in WalkDir::new(path).contents_first(true).into_iter().filter_map(|e| e.ok()) {
         if entry.path().is_dir() {
-            let _ = fs::remove_dir(entry.path()); // Schlägt automatisch fehl, wenn nicht leer
+            let _ = fs::remove_dir(entry.path()); // error if not empty, which is fine
         }
     }
 }
@@ -121,10 +119,12 @@ fn process_file(source: &Path, target_dir: &Path) {
     match extension {
         "csv" => {
             if let Ok(json_data) = convert_csv_to_json_normalized(source) {
-                let _ = fs::write(target_path, serde_json::to_string_pretty(&json_data).unwrap());
+                // FIX: to_string() and not to_string_pretty() for minified JSON AI token efficient 
+                let _ = fs::write(target_path, serde_json::to_string(&json_data).unwrap());
             }
         },
         "json" => {
+            // If it's already JSON, just copy it over
             let _ = fs::copy(source, target_path);
         },
         _ => {}
@@ -150,7 +150,6 @@ fn convert_csv_to_json_normalized(path: &Path) -> Result<Value, Box<dyn std::err
         if time_keywords.iter().any(|&k| header.contains(k)) && !value.is_empty() {
             value = normalize_time(&value);
         }
-
         map.insert(header.to_string(), Value::String(value));
     }
         records.push(Value::Object(map));
@@ -168,49 +167,40 @@ fn normalize_time(raw_time: &str) -> String {
     raw_time.to_string()
 }
 
-fn generate_agent_briefing(refined_path: &Path) {
-    let briefing = json!({
-        "status": "Ready for AI Analysis",
-        "structure": "Categorized by forensic tactics",
-        "timeline_available": true
-    });
-    let _ = fs::write(refined_path.join("agent_briefing.json"), serde_json::to_string_pretty(&briefing).unwrap());
-}
-
 pub fn create_master_timeline(refined_path: &Path) {
     let mut timeline = Vec::new();
-    let current_year = chrono::Utc::now().year(); 
+    let current_year = chrono::Local::now().year(); // Nutzt jetzt Lokalzeit-Jahr
 
-    for entry in WalkDir::new(refined_path)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_file()) 
-    {
+    // Wir gehen durch alle Dateien im refined-Ordner
+    for entry in walkdir::WalkDir::new(refined_path).into_iter().filter_map(|e| e.ok()).filter(|e| e.path().is_file()) {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") || 
-           path.file_name().unwrap() == "agent_briefing.json" || 
-           path.file_name().unwrap() == "master_timeline.json" 
+        let file_name = path.file_name().unwrap().to_string_lossy();
+        
+        // --- HIER KOMMT DER FILTER HIN ---
+        // Wir überspringen alles, was kein JSON ist, UND unsere Spezialdateien
+        if !file_name.ends_with(".json") 
+           || file_name == "case_summary.json" 
+           || file_name == "master_timeline.json" 
         {
             continue;
         }
+        // ---------------------------------
 
-        if let Ok(file) = File::open(path) {
-            let data: Value = serde_json::from_reader(file).unwrap_or(Value::Null);
+        if let Ok(file) = std::fs::File::open(path) {
+            let data: serde_json::Value = serde_json::from_reader(file).unwrap_or(serde_json::Value::Null);
             if let Some(array) = data.as_array() {
                 for item in array {
                     if let Some(obj) = item.as_object() {
                         if let Some(ts) = find_best_timestamp(obj) {
                             
-                            // Check for suspicious future timestamps
-                            // Mark as suspicious if year > current_year + 1
-                            let is_future = ts.starts_with(|c: char| c.is_ascii_digit()) && 
-                                            ts[0..4].parse::<i32>().unwrap_or(0) > current_year + 1;
+                            // Nutzt die neue Deep-Scan Logik für die 2069-Treiber
+                            let has_future_date = check_for_future_dates(obj, current_year);
 
-                            timeline.push(json!({
+                            timeline.push(serde_json::json!({
                                 "ts": ts,
                                 "cat": path.parent().unwrap().file_name().unwrap().to_string_lossy(),
-                                "src": path.file_name().unwrap().to_string_lossy(),
-                                "suspicious_time": is_future, 
+                                "src": file_name,
+                                "suspicious_time": has_future_date, 
                                 "data": item
                             }));
                         }
@@ -220,9 +210,9 @@ pub fn create_master_timeline(refined_path: &Path) {
         }
     }
 
+    // Sortieren und minifiziert speichern
     timeline.sort_by(|a, b| a["ts"].as_str().unwrap().cmp(b["ts"].as_str().unwrap()));
-    let _ = fs::write(refined_path.join("master_timeline.json"), 
-                      serde_json::to_string_pretty(&timeline).unwrap());
+    let _ = std::fs::write(refined_path.join("master_timeline.json"), serde_json::to_string(&timeline).unwrap());
 }
 
 fn find_best_timestamp(obj: &Map<String, Value>) -> Option<String> {
@@ -241,4 +231,23 @@ fn find_best_timestamp(obj: &Map<String, Value>) -> Option<String> {
         }
     }
     None
+}
+
+// Hilfsfunktion: Scannt ALLE Felder eines Objekts nach verdächtigen Jahreszahlen
+fn check_for_future_dates(obj: &serde_json::Map<String, serde_json::Value>, current_year: i32) -> bool {
+    for value in obj.values() {
+        if let Some(s) = value.as_str() {
+            // Wir prüfen, ob der String mit 4 Ziffern beginnt (z.B. "2069-...")
+            if s.len() >= 4 && s.chars().take(4).all(|c| c.is_ascii_digit()) {
+                if let Ok(year) = s[0..4].parse::<i32>() {
+                    // Markieren als verdächtig, wenn das Jahr in der Zukunft liegt
+                    // (Aber wir begrenzen es auf 2100, um totalen Datenmüll auszuschließen)
+                    if year > current_year && year < 2100 {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }

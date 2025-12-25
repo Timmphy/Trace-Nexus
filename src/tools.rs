@@ -1,6 +1,7 @@
 // src/tools.rs
 use std::fs;
 use std::path::Path;
+use crate::ui;
 
 pub const REQUIRED_TOOLS: &[&str] = &[
     "tools/AmcacheParser.exe",
@@ -27,7 +28,7 @@ pub fn verify_tools() -> Result<(), Vec<String>> {
 }
 
 pub fn unblock_tools() {
-    println!("[*] Optimization: Unblocking forensic tools...");
+    ui::info("Optimization: Unblocking forensic tools...");
     
     // Check recursively in the "tools" directory
     if let Ok(entries) = fs::read_dir("tools") {

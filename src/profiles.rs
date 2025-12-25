@@ -1,10 +1,13 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use crate::ui;
+use colored::*;
+
 
 /// Runs an external forensic tool and logs stdout/stderr.
 fn run_command(name: &str, executable: &str, args: Vec<String>, out_dir: &str) {
-    println!("[*] Executing: {}", name);
+    ui::info(&format!("Executing: {}", name));
 
     // 1. Create logs directory
     let log_dir = Path::new(out_dir).join("logs");
@@ -36,18 +39,18 @@ fn run_command(name: &str, executable: &str, args: Vec<String>, out_dir: &str) {
 
             // 5. Check exit status
             if out.status.success() {
-                println!("[+] {} finished successfully.", name);
+                ui::success(&format!("{} finished successfully.", name));
             } else {
-                println!("[-] {} reported an issue. Check logs/{}.log", name, name);
+                ui::error(&format!("{} reported an issue. Check logs/{}.log", name, name));
             }
         },
-        Err(e) => eprintln!("[-] Critical Error: Could not start {}: {}", name, e),
+        Err(e) => ui::error(&format!("Critical Error: Could not start {}: {}", name, e)),
     }
 }
 
 /// Collects lightweight forensic artifacts for quick triage.
 pub fn run_light(out_dir: &str) {
-    println!("\n--- [ PHASE: LIGHT COLLECTION ] ---");
+    println!("{}", "\n--- [ PHASE: LIGHT COLLECTION ] ---\n".bright_cyan().bold());
 
     // Amcache: executed programs and installed software (CSV)
     run_command(
@@ -88,8 +91,7 @@ pub fn run_full(out_dir: &str) {
     // Light analysis first
     run_light(out_dir);
 
-    println!("\n--- [ PHASE: FULL DEEP DIVE ] ---");
-
+    println!("{}", "\n--- [ PHASE: FULL DEEP DIVE ] ---\n".bright_cyan().bold());
     // MFT: Master File Table analysis (JSON)
     run_command(
         "MFTECmd",
@@ -110,7 +112,7 @@ pub fn run_full(out_dir: &str) {
         .to_string_lossy()
         .to_string();
 
-    println!("[*] Loading Expert Batch: {}", relative_batch_path);
+    ui::info(&format!("Loading RECmd Batches: {}", relative_batch_path));
 
     run_command(
         "RECmd_Expert_Batch",
